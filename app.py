@@ -190,13 +190,21 @@ def display_news_section(title, news, page_size=PAGE_SIZE):
             st.info(f"No results found for {title}.")
         else:
             for art in news[start:end]:
-                st.markdown("---")
+                from datetime import datetime
+
+                published_str = art.get("published", "Unknown Date")
+                try:
+                    dt = datetime.strptime(published_str, "%Y-%m-%dT%H:%M:%S%z")
+                    simple_date = dt.strftime("%Y-%m-%d")
+                except:
+                    simple_date = published_str
+
                 st.markdown(
                     f"""
                     <div style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
                         <h3 style="margin-bottom:0.2em;">{art.get('title')}</h3>
                         <p style="font-size:0.9em; color:#555; margin:0.2em 0;">
-                            {art.get('author', 'Unknown Source')} &bull; {art.get('published', 'Unknown Date')}
+                            {art.get('author', 'Unknown Source')} &bull; {simple_date}
                         </p>
                         <p style="margin:0.5em 0;">{art.get('description') or ''}</p>
                         <a style="text-decoration:none; font-weight:bold; color:#1a73e8;" href="{art.get('url')}" target="_blank">Read more</a>
@@ -231,16 +239,27 @@ def display_combined_news(news, page_size=PAGE_SIZE):
             st.info("No combined news found.")
         else:
             for art in news[start:end]:
-                st.markdown("---")
+                from datetime import datetime
+
+                published_str = art.get("published", "Unknown Date")
+                try:
+                    dt = datetime.strptime(published_str, "%Y-%m-%dT%H:%M:%S%z")
+                    simple_date = dt.strftime("%Y-%m-%d")
+                except:
+                    simple_date = published_str
+
                 st.markdown(
                     f"""
                     <div style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
                         <h3 style="margin-bottom:0.2em;">{art.get('title')}</h3>
                         <p style="font-size:0.9em; color:#555; margin:0.2em 0;">
-                            {art.get('author', 'Unknown Source')} &bull; {art.get('published', 'Unknown Date')}
+                            {art.get('author', 'Unknown Source')} &bull; {simple_date}
                         </p>
                         <p style="margin:0.5em 0;">{art.get('description') or ''}</p>
-                        <a style="text-decoration:none; font-weight:bold; color:#1a73e8;" href="{art.get('url')}" target="_blank">Read more</a>
+                        <a style="text-decoration:none; font-weight:bold; color:#1a73e8;"
+                           href="{art.get('url')}" target="_blank">
+                           Read more
+                        </a>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -277,8 +296,19 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown('<div class="center-title">NT News</div>', unsafe_allow_html=True)
+
+    # Initialize form default values
+    if "form_values" not in st.session_state:
+        st.session_state.form_values = {
+            "kw": "",
+            "topic": "All",
+            "provider": "All",
+            "auto_refresh": False,
+            "refresh_interval": 10,
+        }
+
     with st.sidebar.form("news_form"):
-        kw = st.text_input("Keyword")
+        kw = st.text_input("Keyword", value=st.session_state.form_values["kw"])
         topic = st.selectbox(
             "Topic",
             [
@@ -300,7 +330,23 @@ def main():
             if auto_refresh
             else 0
         )
-        submit = st.form_submit_button("Search")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            submit = st.form_submit_button("Search")
+        with col2:
+            clear = st.form_submit_button("Clear")
+            if clear:
+                # Reset form values
+                st.session_state.form_values = {
+                    "kw": "",
+                    "topic": "All",
+                    "provider": "All",
+                    "auto_refresh": False,
+                    "refresh_interval": 10,
+                }
+                # Restore global top news
+                st.session_state["combined_news"] = fetch_global_top_news()
+                st.rerun()
     if auto_refresh:
         st_autorefresh(interval=refresh_interval * 1000, limit=100, key="auto_refresh")
     if "combined_news" not in st.session_state:
