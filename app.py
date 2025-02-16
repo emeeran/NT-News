@@ -1,19 +1,30 @@
-import os, json, requests, streamlit as st, concurrent.futures, threading
+import os, json, requests, streamlit as st, concurrent.futures, threading, warnings, logging
 from dotenv import load_dotenv
+from typing import Dict, List, Any
 
-# Global session to optimize HTTP connection reuse
+# Configure logging and suppress specific warnings
+warnings.filterwarnings("ignore", message=".*missing ScriptRunContext.*")
+warnings.filterwarnings("ignore", message=".*Thread.*")
+logging.getLogger("root").setLevel(logging.WARNING)
+try:
+    logging.getLogger("streamlit.runtime.scriptrunner.script_run_context").disabled = (
+        True
+    )
+except Exception:
+    pass
+
+load_dotenv()
+
 session = requests.Session()
 
-# Fallback import for st_autorefresh
 try:
     from streamlit_autorefresh import st_autorefresh
 except ModuleNotFoundError:
-    # Dummy auto-refresh function if the module is missing
+
     def st_autorefresh(*args, **kwargs):
         return None
 
 
-# Fallback import for ScriptRunContext
 try:
     from streamlit.runtime.scriptrunner.script_run_context import (
         get_script_run_ctx,
@@ -21,24 +32,20 @@ try:
     )
 except ModuleNotFoundError:
 
+    class DummyScriptRunCtx:
+        pass
+
     def get_script_run_ctx():
-        return None
+        return DummyScriptRunCtx()
 
     def add_script_run_ctx(thread, ctx):
         pass
 
 
-load_dotenv()
-TIMEOUT = 10  # seconds
-PAGE_SIZE = 10  # articles per page; updated from 5 to 10
+TIMEOUT = 10
+PAGE_SIZE = 25
 
-
-# Helper to run functions in a thread with ScriptRunContext attached
-def run_with_ctx(fn, *args, **kwargs):
-    ctx = get_script_run_ctx()
-    thread = threading.current_thread()
-    add_script_run_ctx(thread, ctx)
-    return fn(*args, **kwargs)
+# Removed unused run_with_ctx
 
 
 # Optimize make_request() to reuse session connections.
@@ -128,7 +135,33 @@ def fetch_guardian_news(query):
     ]
 
 
-# Use a dictionary comprehension to launch fetch tasks concurrently.
+@st.cache_data(show_spinner=False)
+def fetch_global_top_news(query: str = "") -> List[Dict[str, Any]]:
+    api_key = os.getenv("NEWS_API_KEY")
+    if not api_key:
+        return []
+    url = "https://newsapi.org/v2/top-headlines"
+    params = {
+        "apiKey": api_key,
+        "language": "en",
+        "pageSize": PAGE_SIZE,
+        "country": "us",
+    }
+    if query.strip():
+        params["q"] = query
+    articles = make_request(url, params, "Global Top News error").get("articles", [])
+    return [
+        {
+            "title": a.get("title"),
+            "author": a.get("source", {}).get("name", "Unknown Source"),
+            "published": a.get("publishedAt", "Unknown Date"),
+            "description": a.get("description", ""),
+            "url": a.get("url"),
+        }
+        for a in articles
+    ]
+
+
 def fetch_all_news(query):
     fetchers = {
         "Currents News": fetch_currents_news,
@@ -137,13 +170,8 @@ def fetch_all_news(query):
         "The Guardian Results": fetch_guardian_news,
     }
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = {
-            name: executor.submit(run_with_ctx, fn, query)
-            for name, fn in fetchers.items()
-        }
-        return {
-            name: fut.result() if fut.done() else [] for name, fut in futures.items()
-        }
+        futures = {name: executor.submit(fn, query) for name, fn in fetchers.items()}
+        return {name: fut.result() for name, fut in futures.items()}
 
 
 # New pagination in each news section
@@ -234,7 +262,6 @@ def display_combined_news(news, page_size=PAGE_SIZE):
 
 def main():
     st.set_page_config(page_title="NT News", layout="wide")
-    # Inject CSS for styling title and subtitle
     st.markdown(
         """
         <style>
@@ -245,23 +272,24 @@ def main():
             font-weight: bold;
             margin-bottom: 0;
         }
-
         </style>
         """,
         unsafe_allow_html=True,
     )
     st.markdown('<div class="center-title">NT News</div>', unsafe_allow_html=True)
-    # st.markdown(
-    #     '<div class="center-subtitle">Search news by keyword and select a topic.</div>',
-    #     unsafe_allow_html=True,
-    # )
-
-    # Sidebar auto-refresh and search inputs
     with st.sidebar.form("news_form"):
         kw = st.text_input("Keyword")
         topic = st.selectbox(
             "Topic",
-            ["All", "Technology", "Business", "Entertainment", "History", "Science"],
+            [
+                "All",
+                "Technology",
+                "Artificial intelligence ",
+                "Business",
+                "Entertainment",
+                "History",
+                "Science",
+            ],
         )
         provider = st.selectbox(
             "API Provider", ["All", "Currents", "NewsAPI", "GNews", "The Guardian"]
@@ -275,14 +303,15 @@ def main():
         submit = st.form_submit_button("Search")
     if auto_refresh:
         st_autorefresh(interval=refresh_interval * 1000, limit=100, key="auto_refresh")
-
+    if "combined_news" not in st.session_state:
+        st.session_state["combined_news"] = fetch_global_top_news()
+        if st.session_state["combined_news"]:
+            st.subheader("Today's Top News")
     query = f"{kw} {topic}" if topic != "All" else kw
     if not query.strip():
-        # Optionally display previous results if available.
         if "combined_news" in st.session_state:
             display_combined_news(st.session_state["combined_news"])
         return
-
     if submit:
         with st.spinner("Fetching news..."):
             if provider == "All":
@@ -301,15 +330,20 @@ def main():
                 combined = fetch_gnews_news(query)
             elif provider == "The Guardian":
                 combined = fetch_guardian_news(query)
-        st.session_state["combined_news"] = combined  # Persist results across runs.
-        st.subheader(f"Results for: {query}")
-        st.download_button(
-            "Download Results (JSON)",
-            data=json.dumps(combined, indent=2),
-            file_name="news_results.json",
-            mime="application/json",
-        )
-    # Always display combined results if available.
+            if not combined:
+                if provider != "All" and not os.getenv(
+                    f"{provider.upper().replace(' ', '_')}_API_KEY"
+                ):
+                    st.error(
+                        f"Missing API key for {provider}. Please check your .env file."
+                    )
+                else:
+                    st.warning(
+                        f"No results found for '{query}' from {provider}. Try different keywords or another provider."
+                    )
+        st.session_state["combined_news"] = combined
+        if combined:
+            st.subheader(f"Results for: {query}")
     if "combined_news" in st.session_state:
         display_combined_news(st.session_state["combined_news"])
 

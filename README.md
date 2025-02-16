@@ -7,10 +7,9 @@ A Streamlit-based news aggregator that integrates multiple news APIs and offers 
 - **Keyword & Topic Search:** Filter news by keyword and topic.
 - **Provider Selection:** Choose an API provider from a dropdown.
 - **Auto Refresh:** Enable auto-refresh to update news periodically.
-- **Pagination:** View results in paginated sections for better readability.
-- **Download News:** Export aggregated results as a JSON file.
-- **Performance Optimizations:** Uses a global requests session and concurrent fetching for faster performance.
-- **Environment Configuration:** Securely manage API keys using a `.env` file.
+- **Pagination:** View results in paginated sections.
+- **Download News:** Export aggregated results as JSON.
+- **Performance Optimizations:** Global requests session and concurrent fetching.
 
 ## Setup & Installation
 1. Install dependencies:
