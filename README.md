@@ -9,8 +9,9 @@ A Streamlit-based news aggregator that integrates multiple news APIs and offers 
 - **Auto Refresh:** Enable auto-refresh to update news periodically.
 - **Pagination:** View results in paginated sections for better readability.
 - **Download News:** Export aggregated results as a JSON file.
-- **Performance Optimizations:** Uses a global requests session and concurrent fetching for faster performance.
-- **Environment Configuration:** Securely manage API keys using a `.env` file.
+- **Performance Optimizations:** Uses a global requests session, concurrent fetching, and caching.
+- **Enhanced Logging & Type Hints:** Improved error tracking via logging and static type annotations.
+- **Centralized Configuration:** Manage constants and configuration in `config.py`.
 
 ## Setup & Installation
 1. Install dependencies:
@@ -22,6 +23,11 @@ A Streamlit-based news aggregator that integrates multiple news APIs and offers 
    ```
    streamlit run app.py
    ```
+
+## Enhancements & Testing
+- **Logging:** Check logs for API call errors and performance metrics.
+- **Type Safety:** Run static analysis with mypy.
+- **Unit Testing:** Consider adding tests (e.g., using pytest) for API functions and helper methods.
 
 ## License
 MIT License

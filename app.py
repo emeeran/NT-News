@@ -1,19 +1,39 @@
-import os, json, requests, streamlit as st, concurrent.futures, threading
+import os, json, requests, streamlit as st, concurrent.futures, threading, logging
 from dotenv import load_dotenv
+from typing import Any, Dict, List
+from config import TIMEOUT, PAGE_SIZE  # use centralized config
+from requests.adapters import HTTPAdapter, Retry  # <-- new import
 
-# Global session to optimize HTTP connection reuse
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# Global session with retry enabled
 session = requests.Session()
+retries = Retry(
+    total=3,
+    backoff_factor=0.3,
+    status_forcelist=[500, 502, 503, 504],
+    allowed_methods=["GET", "POST"],
+)
+adapter = HTTPAdapter(max_retries=retries)
+session.mount("http://", adapter)
+session.mount("https://", adapter)
 
-# Fallback import for st_autorefresh
+# Fallback for st_autorefresh
 try:
     from streamlit_autorefresh import st_autorefresh
 except ModuleNotFoundError:
-    # Dummy auto-refresh function if the module is missing
+
     def st_autorefresh(*args, **kwargs):
         return None
 
 
-# Fallback import for ScriptRunContext
+# Fallback for ScriptRunContext
 try:
     from streamlit.runtime.scriptrunner.script_run_context import (
         get_script_run_ctx,
@@ -21,41 +41,38 @@ try:
     )
 except ModuleNotFoundError:
 
-    def get_script_run_ctx():
+    def get_script_run_ctx() -> None:
         return None
 
-    def add_script_run_ctx(thread, ctx):
+    def add_script_run_ctx(thread: threading.Thread, ctx: Any) -> None:
         pass
 
 
-load_dotenv()
-TIMEOUT = 10  # seconds
-PAGE_SIZE = 10  # articles per page; updated from 5 to 10
-
-
-# Helper to run functions in a thread with ScriptRunContext attached
-def run_with_ctx(fn, *args, **kwargs):
+def run_with_ctx(fn: Any, *args: Any, **kwargs: Any) -> Any:
     ctx = get_script_run_ctx()
     thread = threading.current_thread()
     add_script_run_ctx(thread, ctx)
     return fn(*args, **kwargs)
 
 
-# Optimize make_request() to reuse session connections.
-def make_request(url, params, error_msg="API error"):
+def make_request(
+    url: str, params: Dict[str, str], error_msg: str = "API error"
+) -> Dict[str, Any]:
     try:
         r = session.get(url, params=params, timeout=TIMEOUT)
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ReadTimeout:
         st.error(f"{error_msg}: request timed out.")
+        logger.error(f"{error_msg}: request timed out for URL: {url}")
     except requests.exceptions.HTTPError as err:
         st.error(f"{error_msg}: {err}")
+        logger.error(f"{error_msg}: {err} for URL: {url}")
     return {}
 
 
 @st.cache_data(show_spinner=False)
-def fetch_currents_news(query):
+def fetch_currents_news(query: str) -> List[Dict[str, Any]]:
     api_key = os.getenv("CURRENTS_API_KEY")
     if not api_key:
         return []
@@ -65,7 +82,7 @@ def fetch_currents_news(query):
 
 
 @st.cache_data(show_spinner=False)
-def fetch_newsapi_news(query):
+def fetch_newsapi_news(query: str) -> List[Dict[str, Any]]:
     api_key = os.getenv("NEWS_API_KEY")
     if not api_key:
         return []
@@ -85,7 +102,7 @@ def fetch_newsapi_news(query):
 
 
 @st.cache_data(show_spinner=False)
-def fetch_gnews_news(query):
+def fetch_gnews_news(query: str) -> List[Dict[str, Any]]:
     api_key = os.getenv("GNEWS_API_KEY")
     if not api_key:
         return []
@@ -105,7 +122,7 @@ def fetch_gnews_news(query):
 
 
 @st.cache_data(show_spinner=False)
-def fetch_guardian_news(query):
+def fetch_guardian_news(query: str) -> List[Dict[str, Any]]:
     api_key = os.getenv("GUARDIAN_API_KEY")
     if not api_key:
         return []
@@ -128,8 +145,7 @@ def fetch_guardian_news(query):
     ]
 
 
-# Use a dictionary comprehension to launch fetch tasks concurrently.
-def fetch_all_news(query):
+def fetch_all_news(query: str) -> Dict[str, List[Dict[str, Any]]]:
     fetchers = {
         "Currents News": fetch_currents_news,
         "NewsAPI Results": fetch_newsapi_news,
@@ -146,50 +162,22 @@ def fetch_all_news(query):
         }
 
 
-# New pagination in each news section
-def display_news_section(title, news, page_size=PAGE_SIZE):
-    key_page = f"{title}_page"
-    if key_page not in st.session_state:
-        st.session_state[key_page] = 1
-    total = len(news)
-    current_page = st.session_state[key_page]
-    max_page = (total + page_size - 1) // page_size or 1
-    start = (current_page - 1) * page_size
-    end = start + page_size
-    # Change expanded=False to expanded=True so results remain visible after pagination.
-    with st.expander(title, expanded=True):
-        if not news:
-            st.info(f"No results found for {title}.")
-        else:
-            for art in news[start:end]:
-                st.markdown("---")
-                st.markdown(
-                    f"""
-                    <div style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
-                        <h3 style="margin-bottom:0.2em;">{art.get('title')}</h3>
-                        <p style="font-size:0.9em; color:#555; margin:0.2em 0;">
-                            {art.get('author', 'Unknown Source')} &bull; {art.get('published', 'Unknown Date')}
-                        </p>
-                        <p style="margin:0.5em 0;">{art.get('description') or ''}</p>
-                        <a style="text-decoration:none; font-weight:bold; color:#1a73e8;" href="{art.get('url')}" target="_blank">Read more</a>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            col_prev, col_page, col_next = st.columns(3)
-            with col_prev:
-                if st.button("Previous", key=f"{title}_prev") and current_page > 1:
-                    st.session_state[key_page] -= 1
-            with col_next:
-                if st.button("Next", key=f"{title}_next") and current_page < max_page:
-                    st.session_state[key_page] += 1
-            with col_page:
-                st.markdown(f"Page {current_page} of {max_page}")
-        st.markdown("---")
+def format_article(art: Dict[str, Any]) -> str:
+    return f"""
+    <div style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
+        <h3 style="margin-bottom:0.2em;">{art.get('title')}</h3>
+        <p style="font-size:0.9em; color:#555; margin:0.2em 0;">
+            {art.get('author', 'Unknown Source')} &bull; {art.get('published', 'Unknown Date')}
+        </p>
+        <p style="margin:0.5em 0;">{art.get('description') or ''}</p>
+        <a style="text-decoration:none; font-weight:bold; color:#1a73e8;" href="{art.get('url')}" target="_blank">Read more</a>
+    </div>
+    """
 
 
-# New function to display combined results with global pagination.
-def display_combined_news(news, page_size=PAGE_SIZE):
+def display_combined_news(
+    news: List[Dict[str, Any]], page_size: int = PAGE_SIZE
+) -> None:
     key_page = "combined_page"
     if key_page not in st.session_state:
         st.session_state[key_page] = 1
@@ -204,19 +192,7 @@ def display_combined_news(news, page_size=PAGE_SIZE):
         else:
             for art in news[start:end]:
                 st.markdown("---")
-                st.markdown(
-                    f"""
-                    <div style="width:100%; padding:10px; border:1px solid #ddd; border-radius:5px;">
-                        <h3 style="margin-bottom:0.2em;">{art.get('title')}</h3>
-                        <p style="font-size:0.9em; color:#555; margin:0.2em 0;">
-                            {art.get('author', 'Unknown Source')} &bull; {art.get('published', 'Unknown Date')}
-                        </p>
-                        <p style="margin:0.5em 0;">{art.get('description') or ''}</p>
-                        <a style="text-decoration:none; font-weight:bold; color:#1a73e8;" href="{art.get('url')}" target="_blank">Read more</a>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                st.markdown(format_article(art), unsafe_allow_html=True)
             col_prev, col_page, col_next = st.columns(3)
             with col_prev:
                 if st.button("Previous", key=f"{key_page}_prev") and current_page > 1:
@@ -232,31 +208,17 @@ def display_combined_news(news, page_size=PAGE_SIZE):
         st.markdown("---")
 
 
-def main():
+def main() -> None:
     st.set_page_config(page_title="NT News", layout="wide")
-    # Inject CSS for styling title and subtitle
     st.markdown(
         """
         <style>
-        .center-title {
-            text-align: center;
-            color: teal;
-            font-size: 3em;
-            font-weight: bold;
-            margin-bottom: 0;
-        }
-
+        .center-title { text-align: center; color: teal; font-size: 3em; font-weight: bold; margin-bottom: 0; }
         </style>
         """,
         unsafe_allow_html=True,
     )
     st.markdown('<div class="center-title">NT News</div>', unsafe_allow_html=True)
-    # st.markdown(
-    #     '<div class="center-subtitle">Search news by keyword and select a topic.</div>',
-    #     unsafe_allow_html=True,
-    # )
-
-    # Sidebar auto-refresh and search inputs
     with st.sidebar.form("news_form"):
         kw = st.text_input("Keyword")
         topic = st.selectbox(
@@ -278,7 +240,6 @@ def main():
 
     query = f"{kw} {topic}" if topic != "All" else kw
     if not query.strip():
-        # Optionally display previous results if available.
         if "combined_news" in st.session_state:
             display_combined_news(st.session_state["combined_news"])
         return
@@ -288,7 +249,8 @@ def main():
             if provider == "All":
                 results = fetch_all_news(query)
                 combined = []
-                for articles in results.values():
+                for name, articles in results.items():
+                    logger.info(f"{name} returned {len(articles)} articles.")
                     combined.extend(articles)
                 combined = sorted(
                     combined, key=lambda a: a.get("published", ""), reverse=True
@@ -301,7 +263,11 @@ def main():
                 combined = fetch_gnews_news(query)
             elif provider == "The Guardian":
                 combined = fetch_guardian_news(query)
-        st.session_state["combined_news"] = combined  # Persist results across runs.
+        # Debug: log total combined articles count
+        logger.info(f"Total combined articles: {len(combined)}")
+        if not combined:
+            st.warning("No news articles returned. Check your query and API keys.")
+        st.session_state["combined_news"] = combined
         st.subheader(f"Results for: {query}")
         st.download_button(
             "Download Results (JSON)",
@@ -309,7 +275,6 @@ def main():
             file_name="news_results.json",
             mime="application/json",
         )
-    # Always display combined results if available.
     if "combined_news" in st.session_state:
         display_combined_news(st.session_state["combined_news"])
 
